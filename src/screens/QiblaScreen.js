@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, Alert } from 'react-native';
-// Sensör kütüphanesini import ediyoruz
-import { magnetometer } from 'react-native-sensors';
-import Geolocation from 'react-native-geolocation-service';
+// Yalnızca konum için gerekli olanı kullanıyoruz
+import Geolocation from 'react-native-geolocation-service'; 
 
 // Kâbe'nin koordinatları
 const KAABA_LAT = 21.4225;
@@ -25,55 +24,46 @@ const calculateQiblaDirection = (lat, lon) => {
 
 
 export default function QiblaScreen() {
+    // Sensör verisi gelmediği için deviceHeading'i manuel olarak 0'da tutuyoruz.
     const [deviceHeading, setDeviceHeading] = useState(0); 
     const [qiblaDirection, setQiblaDirection] = useState(null); 
     const [loading, setLoading] = useState(true);
     const [userLocation, setUserLocation] = useState(null);
     const [error, setError] = useState(null);
-    const [isPusulaAktif, setIsPusulaAktif] = useState(false);
 
     useEffect(() => {
-        // 1. Konum Al ve Kıble Yönünü Hesapla
+        // Konum Al ve Kıble Yönünü Hesapla
         Geolocation.getCurrentPosition(
             (position) => {
                 const { latitude, longitude } = position.coords;
                 setUserLocation({ latitude, longitude });
                 const qiblaAngle = calculateQiblaDirection(latitude, longitude);
                 setQiblaDirection(qiblaAngle);
+                setLoading(false);
             },
             (err) => {
                 setError("Konum alınamadı. Lütfen GPS'i kontrol edin.");
-                // Varsayılan konum
                 const defaultLat = 37.4220; 
                 const defaultLon = -122.0840;
                 const qiblaAngle = calculateQiblaDirection(defaultLat, defaultLon);
                 setQiblaDirection(qiblaAngle);
                 setUserLocation({ latitude: defaultLat, longitude: defaultLon });
+                setLoading(false);
             },
             { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
         );
 
-        // 2. Manyetometreye (Pusula) Abone Ol
-        const subscription = magnetometer.subscribe(({ x, y }) => {
-            let angle = Math.atan2(y, x) * (180 / Math.PI);
-            if (angle < 0) angle += 360;
-            
-            // Manyetometre sensörü gerçek pusula açısının tersini verir, bu yüzden 360'dan çıkarılır
-            setDeviceHeading(Math.round((360 - angle) % 360)); 
-            setIsPusulaAktif(true);
-            setLoading(false);
-        },
-        (err) => {
-            setError("Manyetik Sensör verisi alınamıyor.");
-            setIsPusulaAktif(false);
-            setLoading(false);
-            Alert.alert("Sensör Hatası", "Cihazınızda pusula sensörü bulunmayabilir veya erişim reddedilmiş olabilir.");
-        });
+        // PUSULA VERİSİ ARTIK ALINMAYACAK (Sensör kütüphanesi kaldırıldı)
+        
+        // Emülatörde pusula verisi gelmediği için uyarı gösterelim.
+        if (process.env.NODE_ENV === 'development') {
+             // Sadece geliştirme modunda (emülatörde) uyarı göster
+             Alert.alert("Simülasyon Modu", "Pusula verisi (deviceHeading) sensörsüz cihazlarda (emülatörler dahil) alınamaz. Lütfen fiziksel cihazda test edin.");
+        }
 
-        // Temizleme fonksiyonu
-        return () => {
-            subscription.unsubscribe();
-        };
+
+        // Temizleme fonksiyonu: Sensör aboneliği olmadığı için boş kalacak
+        return () => {};
     }, []);
 
     // Rota Hesaplamaları
@@ -81,13 +71,13 @@ export default function QiblaScreen() {
         return <ActivityIndicator size="large" style={styles.loading} color="#00A897" />;
     }
     
-    // Kıble Okunun rotasyonu (Pusula sabitken, okun dönmesi)
+    // Kıble Okunun rotasyonu: Cihaz açısı 0 kabul edildiği için doğrudan Kıble açısı
     const qiblaRotation = qiblaDirection - deviceHeading; 
     
-    // Pusula kartının (arka planın) rotasyonu (Cihazın yönüne göre dönmesi)
+    // Pusula kartının rotasyonu: Cihaz açısı 0 kabul edildiği için dönmeyecektir.
     const compassRotation = -deviceHeading;
 
-    // Hedefe hizalı mı kontrolü
+    // Hedefe hizalı mı kontrolü (Sadece deviceHeading 0 ise çalışır)
     const rotationDeg = qiblaRotation % 360;
     const isAligned = Math.abs(rotationDeg) < 5 || Math.abs(rotationDeg) > 355;
 
@@ -99,16 +89,16 @@ export default function QiblaScreen() {
 
             <View style={styles.statusBox}>
                 <Text style={styles.statusText}>
-                    {isPusulaAktif ? `Cihaz Yönü: ${deviceHeading}°` : 'Pusula verisi alınamıyor.'}
+                    Cihaz Yönü: 0° (Sensör verisi bekleniyor)
                 </Text>
                 <Text style={styles.statusDirection}>
                     Mekke Açısı (Kuzey'den): {qiblaDirection}°
                 </Text>
             </View>
 
-            {/* PUSULA ÇERÇEVESİ */}
+            {/* PUSULA ÇERÇEVESİ - Artık sadece görsel amaçlıdır */}
             <View style={styles.compassFrame}>
-                {/* 1. Pusula Arka Planı (N/E/S/W işaretleri cihazla birlikte döner) */}
+                {/* 1. Pusula Arka Planı (Sabit kalır) */}
                 <View style={[styles.compassBase, { transform: [{ rotate: `${compassRotation}deg` }] }]}>
                     <Text style={[styles.degreeMarker, styles.north]}>N</Text> 
                     <Text style={[styles.degreeMarker, styles.east]}>E</Text> 
@@ -116,7 +106,7 @@ export default function QiblaScreen() {
                     <Text style={[styles.degreeMarker, styles.west]}>W</Text>
                 </View>
 
-                {/* 2. Kıble Oku (Sabitlenmiş çerçeve içinde dönen ok) */}
+                {/* 2. Kıble Oku (Kıble açısına göre döner) */}
                 <View 
                     style={[
                         styles.qiblaIndicator, 
@@ -131,13 +121,17 @@ export default function QiblaScreen() {
 
             {/* Hizalama Durumu */}
             <View style={[styles.alignmentStatus, isAligned && styles.alignedStatus]}>
-                <Text style={styles.alignmentText}>
-                    {isAligned ? '✓ Kıble ile Hizalandı' : 'Cihazınızı döndürmeye devam edin.'}
+                <Text style={[styles.alignmentText, isAligned && { color: 'white' }]}>
+                    {isAligned ? '✓ Kıble ile Hizalandı (Cihaz Kuzey’e bakıyorsa)' : 'Cihazınızı döndürmeye devam edin.'}
                 </Text>
             </View>
             
             {error && <Text style={styles.errorText}>HATA: {error}</Text>}
             
+            <Text style={styles.emulatorWarning}>
+                **ÖNEMLİ: Pusula özelliği yalnızca sensörlü (fiziksel) Android cihazlarda çalışır. Emülatörde sadece hesaplanan açıyı görürsünüz.**
+            </Text>
+
         </View>
     );
 }
@@ -241,8 +235,14 @@ const styles = StyleSheet.create({
     alignmentText: {
         fontSize: 16,
         fontWeight: 'bold',
-        color: '#333',
         color: 'white',
+    },
+    emulatorWarning: {
+        fontSize: 12,
+        color: '#FF0000',
+        fontWeight: 'bold',
+        marginTop: 20,
+        textAlign: 'center',
     },
     errorText: {
         fontSize: 14,
