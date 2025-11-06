@@ -30,13 +30,15 @@ export default function HomeScreen() {
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
           {
             title: 'Global Adhan Pro',
-            message: 'This app requires access to your location to show accurate prayer times.',
+            message:
+              'This app requires access to your location to show accurate prayer times.',
             buttonNeutral: 'Ask Me Later',
             buttonNegative: 'Cancel',
             buttonPositive: 'OK',
           }
         );
-        if (granted === PermissionsAndroid.RESULTS.GRANTED) getCurrentLocation();
+        if (granted === PermissionsAndroid.RESULTS.GRANTED)
+          getCurrentLocation();
         else console.log('Location permission denied');
       } else getCurrentLocation();
     } catch (err) {
@@ -67,15 +69,16 @@ export default function HomeScreen() {
       setPrayers(data);
       findNextPrayer(data);
 
-      // reverse geocode (optional city)
-      // reverse geocode (optional city)
-        const geo = await axios.get(
+      const geo = await axios.get(
         `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
-        { headers: { 'User-Agent': 'GlobalAdhanPro/1.0 (contact@yourdomain.com)' } }
-        );
-        const addr = geo.data.address;
-        setCity(addr.city || addr.town || addr.village || 'Unknown');
-``
+        {
+          headers: {
+            'User-Agent': 'GlobalAdhanPro/1.0 (contact@yourdomain.com)',
+          },
+        }
+      );
+      const addr = geo.data.address;
+      setCity(addr.city || addr.town || addr.village || 'Unknown');
     } catch (e) {
       console.error(e);
     } finally {
@@ -83,12 +86,17 @@ export default function HomeScreen() {
     }
   };
 
+  // 🧠 FIXED LOGIC
   const findNextPrayer = times => {
     const now = moment();
-    const upcoming = Object.entries(times).find(([name, t]) =>
-      now.isBefore(moment(t, 'HH:mm'))
-    );
-    setNextPrayer(upcoming ? upcoming[0] : 'Fajr');
+
+    const prayerOrder = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
+    const filtered = prayerOrder
+      .filter(p => times[p])
+      .map(p => ({ name: p, time: moment(times[p], 'HH:mm') }));
+
+    const upcoming = filtered.find(p => now.isBefore(p.time));
+    setNextPrayer(upcoming ? upcoming.name : 'Fajr');
   };
 
   const today = moment().format('dddd, MMMM D, YYYY');
@@ -114,37 +122,32 @@ export default function HomeScreen() {
       </View>
 
       <Text style={styles.sectionTitle}>Today's Prayer Times</Text>
-      {Object.entries(prayers)
-        .filter(([name]) =>
-            ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'].includes(name)
-        )
-        .map(([name, time]) => (
-            <View
-            key={name}
+      {['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'].map(name => (
+        <View
+          key={name}
+          style={[
+            styles.prayerCard,
+            nextPrayer === name && styles.activeCard,
+          ]}
+        >
+          <Text
             style={[
-                styles.prayerCard,
-                nextPrayer === name && styles.activeCard,
+              styles.prayerName,
+              nextPrayer === name && { color: '#fff' },
             ]}
-            >
-            <Text
-                style={[
-                styles.prayerName,
-                nextPrayer === name && { color: '#fff' },
-                ]}
-            >
-                {name}
-            </Text>
-            <Text
-                style={[
-                styles.prayerTime,
-                nextPrayer === name && { color: '#fff' },
-                ]}
-            >
-                {time}
-            </Text>
-            </View>
-        ))}
-
+          >
+            {name}
+          </Text>
+          <Text
+            style={[
+              styles.prayerTime,
+              nextPrayer === name && { color: '#fff' },
+            ]}
+          >
+            {prayers[name]}
+          </Text>
+        </View>
+      ))}
     </ScrollView>
   );
 }
