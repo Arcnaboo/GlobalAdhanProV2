@@ -1,5 +1,4 @@
-/* QiblaScreen.js  – drop-in replacement */
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,170 +6,547 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
+  Animated,
+  Dimensions,
+  PermissionsAndroid,
 } from 'react-native';
-import Geolocation from 'react-native-geolocation-service';
-import { magnetometer } from 'react-native-sensors';
 
-const KAABA_LAT = 21.4225;
-const KAABA_LON = 39.8262;
-
-const calcQibla = (lat, lon) => {
-  const dLon = ((KAABA_LON - lon) * Math.PI) / 180;
-  const lat1 = (lat * Math.PI) / 180;
-  const lat2 = (KAABA_LAT * Math.PI) / 180;
-
-  const y = Math.sin(dLon) * Math.cos(lat2);
-  const x =
-    Math.cos(lat1) * Math.sin(lat2) -
-    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-
-  let brng = (Math.atan2(y, x) * 180) / Math.PI;
-  brng = (brng + 360) % 360;
-  return brng;
-};
-
-export default function QiblaScreen() {
-  const [qibla, setQibla] = useState(null);
+const QiblaScreen = () => {
+  const [qiblaDirection, setQiblaDirection] = useState(null);
   const [heading, setHeading] = useState(0);
-  const [loc, setLoc] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState(null);
+  const [error, setError] = useState(null);
+  const [calibrating, setCalibrating] = useState(true);
+  const [locationPermission, setLocationPermission] = useState(false);
+  const rotationAnim = useRef(new Animated.Value(0)).current;
 
-  /* 1. location */
+  // Kaaba coordinates
+  const KAABA_LAT = 21.4225;
+  const KAABA_LON = 39.8262;
+
+  // Request location permission at the start
   useEffect(() => {
-    Geolocation.getCurrentPosition(
-      pos => {
-        const { latitude, longitude } = pos.coords;
-        setLoc({ latitude, longitude });
-        setQibla(calcQibla(latitude, longitude));
-        setLoading(false);
+    const requestLocationPermission = async () => {
+      try {
+        if (Platform.OS === 'android') {
+          console.log('Requesting Android location permission...');
+          const granted = await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+            {
+              title: 'Qibla Compass Location Permission',
+              message:
+                'Qibla Compass needs access to your location ' +
+                'to calculate the direction to Kaaba.',
+              buttonNeutral: 'Ask Me Later',
+              buttonNegative: 'Cancel',
+              buttonPositive: 'OK',
+            }
+          );
+          
+          if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+            console.log('Location permission granted');
+            setLocationPermission(true);
+            getCurrentLocation();
+          } else {
+            console.log('Location permission denied');
+            setError('Location permission denied. Please enable location services in settings.');
+            setCalibrating(false);
+          }
+        } else {
+          // iOS - location permission is handled differently
+          console.log('iOS location permission flow');
+          setLocationPermission(true);
+          getCurrentLocation();
+        }
+      } catch (err) {
+        console.log('Location permission error:', err);
+        setError('Failed to get location permission.');
+        setCalibrating(false);
+      }
+    };
+
+    requestLocationPermission();
+  }, []);
+
+  const calculateQiblaDirection = (lat, lon) => {
+    const dLon = ((KAABA_LON - lon) * Math.PI) / 180;
+    const lat1 = (lat * Math.PI) / 180;
+    const lat2 = (KAABA_LAT * Math.PI) / 180;
+    
+    const y = Math.sin(dLon) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+    
+    let bearing = (Math.atan2(y, x) * 180) / Math.PI;
+    bearing = (bearing + 360) % 360;
+    
+    return bearing;
+  };
+
+  const getCurrentLocation = () => {
+    console.log('Getting current location...');
+    
+    if (!navigator.geolocation) {
+      setError('Geolocation is not supported by this device.');
+      setCalibrating(false);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        console.log('Location obtained:', position.coords);
+        const { latitude, longitude } = position.coords;
+        const bearing = calculateQiblaDirection(latitude, longitude);
+        setQiblaDirection(bearing);
+        setCalibrating(false);
+        
+        // Now start compass after getting location
+        startCompass();
       },
-      _ => {
-        setErr('Location denied');
-        setLoading(false);
+      (err) => {
+        console.log('Location error:', err);
+        let errorMessage = 'Unable to get location. ';
+        
+        switch (err.code) {
+          case err.PERMISSION_DENIED:
+            errorMessage += 'Location permission denied. Please enable location services.';
+            break;
+          case err.POSITION_UNAVAILABLE:
+            errorMessage += 'Location information unavailable.';
+            break;
+          case err.TIMEOUT:
+            errorMessage += 'Location request timed out.';
+            break;
+          default:
+            errorMessage += 'Please enable location services.';
+        }
+        
+        setError(errorMessage);
+        setCalibrating(false);
       },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+      { 
+        enableHighAccuracy: true, 
+        timeout: 15000, 
+        maximumAge: 60000 
+      }
     );
-  }, []);
+  };
 
-  /* 2. compass */
+  // Compass functionality using device orientation
+  const startCompass = () => {
+    let isSubscribed = true;
+
+    const handleDeviceOrientation = (event) => {
+      if (isSubscribed && event.alpha !== null) {
+        // Use alpha (compass heading) for orientation
+        setHeading(event.alpha);
+      }
+    };
+
+    // Check if device orientation is available
+    if (window.DeviceOrientationEvent) {
+      console.log('Device orientation supported');
+      
+      // For iOS 13+, request permission
+      if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+        console.log('Requesting iOS device orientation permission...');
+        DeviceOrientationEvent.requestPermission()
+          .then(permissionState => {
+            if (permissionState === 'granted') {
+              console.log('Device orientation permission granted');
+              window.addEventListener('deviceorientation', handleDeviceOrientation, true);
+            } else {
+              console.log('Device orientation permission denied');
+              setError('Compass permission denied. Please enable compass access in settings.');
+            }
+          })
+          .catch((err) => {
+            console.log('Device orientation error:', err);
+            setError('Compass not supported on this device.');
+          });
+      } else {
+        // For Android and older iOS
+        console.log('Adding device orientation listener');
+        window.addEventListener('deviceorientation', handleDeviceOrientation, true);
+      }
+    } else {
+      console.log('Device orientation not supported');
+      setError('Compass not supported on this device.');
+    }
+
+    return () => {
+      isSubscribed = false;
+      window.removeEventListener('deviceorientation', handleDeviceOrientation, true);
+    };
+  };
+
+  // Smooth rotation animation
   useEffect(() => {
-    let sub;
-    magnetometer
-      .subscribe(({ x, y }) => {
-        let angle = Math.atan2(y, x) * (180 / Math.PI);
-        angle = (angle + 360) % 360;
-        setHeading(angle);
-      })
-      .then(s => (sub = s))
-      .catch(() =>
-        Alert.alert(
-          'Sensor error',
-          'Compass not available on this device/emulator'
-        )
-      );
+    if (qiblaDirection !== null) {
+      const rotation = (qiblaDirection - heading + 360) % 360;
+      Animated.timing(rotationAnim, {
+        toValue: rotation,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [qiblaDirection, heading]);
 
-    return () => sub && sub.unsubscribe();
-  }, []);
+  const rotation = qiblaDirection !== null ? (qiblaDirection - heading + 360) % 360 : 0;
+  const isAligned = Math.abs(rotation % 360) < 5 || Math.abs(rotation % 360) > 355;
 
-  if (loading) return <ActivityIndicator style={styles.center} size="large" />;
+  if (calibrating) {
+    return (
+      <View style={styles.calibratingContainer}>
+        <View style={styles.calibratingContent}>
+          <ActivityIndicator size="large" color="#00A897" />
+          <Text style={styles.calibratingText}>Requesting location access...</Text>
+          <Text style={styles.calibratingSubtext}>
+            Please allow location permission to calculate Qibla direction
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
-  const rotation = qibla !== null ? qibla - heading : 0;
-  const aligned =
-    Math.abs(rotation % 360) < 5 || Math.abs(rotation % 360) > 355;
+  if (error) {
+    return (
+      <View style={styles.errorContainer}>
+        <View style={styles.errorContent}>
+          <View style={styles.errorIcon}>
+            <Text style={styles.errorIconText}>🧭</Text>
+          </View>
+          <Text style={styles.errorTitle}>Permission Required</Text>
+          <Text style={styles.errorMessage}>{error}</Text>
+          <Text style={styles.errorHelp}>
+            Please check your device settings and grant location & motion permissions, then restart the app.
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  const rotateInterpolate = rotationAnim.interpolate({
+    inputRange: [0, 360],
+    outputRange: ['0deg', '360deg'],
+  });
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Qibla Compass</Text>
-
-      <View style={styles.statusBox}>
-        <Text style={styles.statusTxt}>
-          Qibla: {qibla?.toFixed(1)}°  |  Heading: {heading.toFixed(1)}°
-        </Text>
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.title}>Qibla Compass</Text>
+        <Text style={styles.subtitle}>Point your device toward Kaaba</Text>
       </View>
 
-      {/* compass */}
-      <View style={styles.compass}>
-        {/* static cardinals */}
-        <View style={styles.cardinals}>
-          <Text style={[styles.cardinal, styles.n]}>N</Text>
-          <Text style={[styles.cardinal, styles.e]}>E</Text>
-          <Text style={[styles.cardinal, styles.s]}>S</Text>
-          <Text style={[styles.cardinal, styles.w]}>W</Text>
+      {/* Compass */}
+      <View style={styles.compassContainer}>
+        {/* Background circle */}
+        <View style={styles.compassBackground} />
+        
+        {/* Degree markers */}
+        <View style={styles.compassMarkers}>
+          {['N', 'E', 'S', 'W'].map((direction, index) => (
+            <Text
+              key={direction}
+              style={[
+                styles.compassDirection,
+                index === 0 && styles.north,
+                index === 1 && styles.east,
+                index === 2 && styles.south,
+                index === 3 && styles.west,
+              ]}
+            >
+              {direction}
+            </Text>
+          ))}
         </View>
 
-        {/* rotating arrow */}
-        <View
+        {/* Rotating Qibla indicator */}
+        <Animated.View 
           style={[
-            styles.arrowWrap,
-            { transform: [{ rotate: `${rotation}deg` }] },
+            styles.arrowContainer,
+            { transform: [{ rotate: rotateInterpolate }] }
+          ]}
+        >
+          <Text style={[
+            styles.arrow,
+            isAligned && styles.arrowAligned
           ]}>
-          <Text style={[styles.arrow, aligned && styles.arrowGreen]}>▼</Text>
-          <Text style={styles.kaaba}>🕋</Text>
-        </View>
+            ➤
+          </Text>
+        </Animated.View>
 
-        {/* center dot */}
-        <View style={styles.dot} />
+        {/* Center dot */}
+        <View style={styles.centerDot} />
       </View>
 
-      <View
-        style={[styles.footer, aligned && { backgroundColor: '#00A897' }]}>
-        <Text style={[styles.footerTxt, aligned && { color: '#fff' }]}>
-          {aligned ? '✓ Aligned with Qibla' : 'Rotate until arrow turns green'}
+      {/* Status */}
+      <View style={[
+        styles.statusContainer,
+        isAligned && styles.statusAligned
+      ]}>
+        <Text style={[
+          styles.statusText,
+          isAligned && styles.statusTextAligned
+        ]}>
+          {isAligned ? '✓ Aligned with Qibla' : 'Keep rotating your device'}
+        </Text>
+        <Text style={[
+          styles.directionText,
+          isAligned && styles.directionTextAligned
+        ]}>
+          Direction: {qiblaDirection?.toFixed(1)}°
         </Text>
       </View>
 
-      {err && <Text style={styles.err}>{err}</Text>}
+      {/* Instructions */}
+      <View style={styles.instructionsContainer}>
+        <Text style={styles.instructionsTitle}>
+          📍 How to use:
+        </Text>
+        <View style={styles.instructionsList}>
+          <Text style={styles.instruction}>• Hold your device flat</Text>
+          <Text style={styles.instruction}>• Rotate until the arrow turns teal</Text>
+          <Text style={styles.instruction}>• The arrow points toward Kaaba in Makkah</Text>
+        </View>
+      </View>
     </View>
   );
-}
+};
 
-const SIZE = 280;
+const { width } = Dimensions.get('window');
+const COMPASS_SIZE = Math.min(width - 80, 300);
+
 const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: 'center', backgroundColor: '#f8f8f8', paddingTop: 40 },
-  center: { flex: 1, justifyContent: 'center' },
-  title: { fontSize: 28, fontWeight: 'bold', color: '#00A897', marginBottom: 10 },
-  statusBox: { backgroundColor: '#fff', padding: 12, borderRadius: 10, marginBottom: 20 },
-  statusTxt: { fontSize: 16, color: '#333' },
-  compass: {
-    width: SIZE,
-    height: SIZE,
-    borderRadius: SIZE / 2,
-    borderWidth: 8,
-    borderColor: '#e0e0e0',
-    backgroundColor: '#fff',
+  container: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+    paddingHorizontal: 20,
+    paddingTop: 60,
+    paddingBottom: 40,
+  },
+  calibratingContainer: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 10,
+    backgroundColor: '#f8fafc',
+    padding: 24,
   },
-  cardinals: { position: 'absolute', width: '100%', height: '100%' },
-  cardinal: { position: 'absolute', fontSize: 18, fontWeight: 'bold', color: '#666' },
-  n: { top: 10, left: '50%', transform: [{ translateX: -9 }] },
-  e: { right: 10, top: '50%', transform: [{ translateY: -10 }] },
-  s: { bottom: 10, left: '50%', transform: [{ translateX: -9 }] },
-  w: { left: 10, top: '50%', transform: [{ translateY: -10 }] },
-  arrowWrap: { position: 'absolute', width: '100%', height: '100%', alignItems: 'center' },
-  arrow: { fontSize: 70, color: '#f9a825', marginTop: -10 },
-  arrowGreen: { color: '#00A897' },
-  kaaba: { fontSize: 26, position: 'absolute', top: 75, color: '#555' },
-  dot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#00A897',
+  calibratingContent: {
+    alignItems: 'center',
+    maxWidth: 300,
+  },
+  calibratingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: '#64748b',
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  calibratingSubtext: {
+    marginTop: 8,
+    fontSize: 14,
+    color: '#94a3b8',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    padding: 24,
+  },
+  errorContent: {
+    alignItems: 'center',
+    maxWidth: 400,
+  },
+  errorIcon: {
+    width: 64,
+    height: 64,
+    backgroundColor: '#fee2e2',
+    borderRadius: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  errorIconText: {
+    fontSize: 24,
+  },
+  errorTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#0f172a',
+    marginBottom: 8,
+  },
+  errorMessage: {
+    fontSize: 16,
+    color: '#64748b',
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 12,
+  },
+  errorHelp: {
+    fontSize: 14,
+    color: '#94a3b8',
+    textAlign: 'center',
+    lineHeight: 20,
+    fontStyle: 'italic',
+  },
+  header: {
+    alignItems: 'center',
+    marginBottom: 40,
+  },
+  title: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#00A897',
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#64748b',
+  },
+  compassContainer: {
+    width: COMPASS_SIZE,
+    height: COMPASS_SIZE,
+    alignSelf: 'center',
+    marginBottom: 32,
+  },
+  compassBackground: {
     position: 'absolute',
+    width: '100%',
+    height: '100%',
+    borderRadius: COMPASS_SIZE / 2,
+    backgroundColor: '#ffffff',
+    borderWidth: 8,
+    borderColor: '#e2e8f0',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 8,
   },
-  footer: {
-    marginTop: 25,
-    paddingVertical: 12,
-    paddingHorizontal: 25,
-    borderRadius: 10,
-    backgroundColor: '#e0e0e0',
+  compassMarkers: {
+    position: 'absolute',
+    width: '100%',
+    height: '100%',
   },
-  footerTxt: { fontSize: 16, fontWeight: '600', color: '#333' },
-  err: { color: 'red', marginTop: 10 },
+  compassDirection: {
+    position: 'absolute',
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#64748b',
+  },
+  north: {
+    top: 16,
+    left: '50%',
+    transform: [{ translateX: -9 }],
+  },
+  east: {
+    right: 16,
+    top: '50%',
+    transform: [{ translateY: -10 }],
+  },
+  south: {
+    bottom: 16,
+    left: '50%',
+    transform: [{ translateX: -9 }],
+  },
+  west: {
+    left: 16,
+    top: '50%',
+    transform: [{ translateY: -10 }],
+  },
+  arrowContainer: {
+    position: 'absolute',
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  arrow: {
+    fontSize: 80,
+    color: '#f59e0b',
+    marginTop: -20,
+  },
+  arrowAligned: {
+    color: '#00A897',
+  },
+  centerDot: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#00A897',
+    transform: [{ translateX: -6 }, { translateY: -6 }],
+    shadowColor: '#00A897',
+    shadowOffset: {
+      width: 0,
+      height: 0,
+    },
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  statusContainer: {
+    backgroundColor: '#e2e8f0',
+    padding: 20,
+    borderRadius: 16,
+    marginBottom: 24,
+  },
+  statusAligned: {
+    backgroundColor: '#00A897',
+  },
+  statusText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#0f172a',
+    textAlign: 'center',
+  },
+  statusTextAligned: {
+    color: '#ffffff',
+  },
+  directionText: {
+    fontSize: 14,
+    color: '#64748b',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  directionTextAligned: {
+    color: 'rgba(255, 255, 255, 0.8)',
+  },
+  instructionsContainer: {
+    backgroundColor: '#ffffff',
+    padding: 20,
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  instructionsTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: 12,
+  },
+  instructionsList: {
+    gap: 8,
+  },
+  instruction: {
+    fontSize: 14,
+    color: '#64748b',
+    lineHeight: 20,
+  },
 });
+
+export default QiblaScreen;
